@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import datetime
 import os
-import cv2
 from scanner_utils import auto_crop_bill
 from fpdf import FPDF
 
