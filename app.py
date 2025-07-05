@@ -1,27 +1,10 @@
-try:
-    import streamlit as st
-    import pandas as pd
-    import datetime
-    import os
-    import cv2
-    from scanner_utils import auto_crop_bill
-    from fpdf import FPDF
-except ImportError:
-    import os
-    os.system("pip install streamlit pandas opencv-python fpdf openpyxl")
-    import streamlit as st
-    import pandas as pd
-    import datetime
-    import os
-    import cv2
-    from scanner_utils import auto_crop_bill
-    from fpdf import FPDF
-
-
-
-
-
-
+import streamlit as st
+import pandas as pd
+import datetime
+import os
+import cv2
+from scanner_utils import auto_crop_bill
+from fpdf import FPDF
 
 INVENTORY_FILE = "inventory.xlsx"
 USAGE_LOG_FILE = "usage_log.xlsx"
