@@ -2,13 +2,12 @@ import streamlit as st
 import pandas as pd
 import datetime
 import io
-import os
-import cv2
-import numpy as np
-from PIL import Image
 from pymongo import MongoClient
+from PIL import Image, ImageEnhance, ImageOps
+import numpy as np
+import os
 
-# MongoDB Connection
+# ===== MongoDB Setup =====
 MONGO_URI = "mongodb+srv://myAtlasDBUser:root@myatlasclusteredu.78toh.mongodb.net/?retryWrites=true&w=majority&appName=myAtlasClusterEDU"
 client = MongoClient(MONGO_URI)
 db = client["Inventory"]
@@ -16,7 +15,7 @@ inventory_col = db["inventory"]
 usage_col = db["usage"]
 bills_col = db["bills"]
 
-# Helper Functions
+# ===== Helper Functions =====
 def fetch_df(col, default_columns):
     data = list(col.find({}, {"_id": 0}))
     if not data:
@@ -28,93 +27,61 @@ def save_df(df, col):
     if not df.empty:
         col.insert_many(df.to_dict("records"))
 
-def scan_image(image_bytes):
-    file_bytes = np.asarray(bytearray(image_bytes), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+def scan_image_pillow(image_bytes):
+    image = Image.open(io.BytesIO(image_bytes)).convert("L")
+    image = ImageOps.invert(image)
+    image_np = np.array(image)
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(blur, 75, 200)
+    non_empty_cols = np.where(image_np.max(axis=0) < 250)[0]
+    non_empty_rows = np.where(image_np.max(axis=1) < 250)[0]
 
-    contours, _ = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+    if non_empty_cols.size and non_empty_rows.size:
+        crop_box = (min(non_empty_cols), min(non_empty_rows),
+                    max(non_empty_cols), max(non_empty_rows))
+        image = image.crop(crop_box)
 
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
-            doc_cnt = approx
-            break
-    else:
-        doc_cnt = np.array([[[0, 0]], [[img.shape[1], 0]], [[img.shape[1], img.shape[0]]], [[0, img.shape[0]]]])
+    image = ImageOps.invert(image)
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(2.0)
 
-    pts = doc_cnt.reshape(4, 2)
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    rect[0], rect[2] = pts[np.argmin(s)], pts[np.argmax(s)]
+    return image.convert("RGB")
 
-    diff = np.diff(pts, axis=1)
-    rect[1], rect[3] = pts[np.argmin(diff)], pts[np.argmax(diff)]
-
-    (tl, tr, br, bl) = rect
-    width = max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl))
-    height = max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl))
-
-    dst = np.array([
-        [0, 0],
-        [width - 1, 0],
-        [width - 1, height - 1],
-        [0, height - 1]], dtype="float32")
-
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(img, M, (int(width), int(height)))
-    scanned = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
-
-    return scanned
-
-# Default columns
-inv_columns = ["S.No", "Item Name", "Category", "Quantity", "Min Stock", "Last Updated", "Location"]
+# ===== Data Initialization =====
+inv_columns = ["S.No", "Item Name", "Category", "Quantity", "Last Updated", "Location"]
 usage_columns = ["Date", "Item Name", "Quantity", "Purpose", "Used In"]
 bills_columns = ["Date", "Vendor", "Bill ID", "Items", "Filename"]
 
-# Initial DataFrames
 inv_df = fetch_df(inventory_col, inv_columns)
 usage_df = fetch_df(usage_col, usage_columns)
 bills_df = fetch_df(bills_col, bills_columns)
 
-# Streamlit UI
-st.set_page_config(layout="wide", page_title="Inventory Manager", page_icon="📦")
+# ===== Streamlit UI =====
+st.set_page_config(layout="wide", page_title="Inventory System", page_icon="📦")
 st.title("📦 Loom Component Inventory System")
 tab1, tab2, tab3, tab4 = st.tabs(["📋 Inventory", "🧾 Bill Scanner", "🛠️ Usage", "📊 Reports"])
 
-# ========== Inventory Tab ==========
+# ===== Inventory Tab =====
 with tab1:
     st.header("📋 View / Add / Update Components")
 
     with st.expander("👁️ View Inventory Table"):
-        search_term = st.text_input("Search Item Name", placeholder="Enter name...")
-        show_low = st.checkbox("Show Below Min Stock")
-        sort_options = [col for col in ["S.No", "Item Name", "Quantity"] if col in inv_df.columns]
-        sort_by = st.selectbox("Sort by", sort_options) if sort_options else None
-
+        search = st.text_input("Search")
         filtered = inv_df.copy()
-        if not filtered.empty:
-            if search_term:
-                filtered = filtered[filtered["Item Name"].str.lower().str.contains(search_term.lower())]
-            if show_low:
-                filtered = filtered[filtered["Quantity"] < filtered["Min Stock"]]
-            if sort_by:
-                filtered = filtered.sort_values(by=sort_by)
+        if search:
+            filtered = filtered[filtered["Item Name"].str.lower().str.contains(search.lower())]
 
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+            if "S.No" in filtered.columns:
+                filtered.drop(columns=["S.No"], inplace=True)
+
+            filtered.insert(0, "S.No", range(1, len(filtered) + 1))
+        st.dataframe(filtered, use_container_width=True)
 
     with st.expander("➕ Add New Component"):
         with st.form("add_form"):
-            name = st.text_input("Item Name", placeholder="e.g. Resistor")
-            category = st.text_input("Category", placeholder="e.g. Electrical")
+            name = st.text_input("Item Name", placeholder="e.g., Resistor")
+            category = st.text_input("Category", placeholder="e.g., Electrical")
             qty = st.number_input("Quantity", min_value=0, step=1)
-            location = st.text_input("Location", placeholder="e.g. Shelf A")
-            min_stock = 0  # Hidden in UI (you can remove or set to 0)
+            location = st.text_input("Location", placeholder="e.g., Shelf A")
 
             if st.form_submit_button("✅ Add"):
                 new_sno = int(inv_df["S.No"].max()) + 1 if not inv_df.empty else 1
@@ -123,7 +90,6 @@ with tab1:
                     "Item Name": name,
                     "Category": category,
                     "Quantity": qty,
-                    "Min Stock": min_stock,
                     "Last Updated": str(datetime.date.today()),
                     "Location": location
                 }
@@ -159,7 +125,7 @@ with tab1:
                     save_df(inv_df, inventory_col)
                     st.success("✅ Updated.")
 
-# ========== Bill Scanner Tab ==========
+# ===== Bill Scanner Tab =====
 with tab2:
     st.header("🧾 Scan and Save Bill")
 
@@ -167,7 +133,7 @@ with tab2:
     img_bytes = None
 
     if method == "Upload":
-        file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
+        file = st.file_uploader("Upload Image", type=["jpg", "png"])
         if file:
             img_bytes = file.read()
     else:
@@ -175,15 +141,14 @@ with tab2:
         if cam:
             img_bytes = cam.read()
 
-    vendor = st.text_input("Vendor", placeholder="e.g. Amazon")
+    vendor = st.text_input("Vendor")
     linked_items = st.multiselect("Linked Items", inv_df["Item Name"].tolist())
 
     if img_bytes and st.button("📤 Save Bill"):
-        scanned_img = scan_image(img_bytes)
-        img = Image.fromarray(scanned_img)
+        scanned_img = scan_image_pillow(img_bytes)
 
         filename = f"bill_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-        img.save(filename, "PDF")
+        scanned_img.save(filename, "PDF")
 
         new_bill = {
             "Date": str(datetime.date.today()),
@@ -196,32 +161,30 @@ with tab2:
         bills_df = pd.concat([bills_df, pd.DataFrame([new_bill])], ignore_index=True)
         save_df(bills_df, bills_col)
 
-        st.success("✅ Bill saved.")
+        st.success(f"✅ Bill saved as {filename}")
 
     st.subheader("📄 Saved Bills")
-    display_bills = bills_df.copy()
-    display_bills.insert(0, "Sl. No", range(1, len(display_bills) + 1))
-    st.dataframe(display_bills, use_container_width=True, hide_index=True)
+    if not bills_df.empty:
+        bills_df_display = bills_df.copy()
+        bills_df_display.insert(0, "S.No", range(1, len(bills_df)+1))
+        st.dataframe(bills_df_display.drop(columns=["Bill ID"]), use_container_width=True)
 
-    for i, row in display_bills.iterrows():
-        st.markdown(f"**Bill {row['Bill ID']}** - {row['Vendor']}")
-        with open(row["Filename"], "rb") as f:
-            st.download_button(f"📥 Download {row['Filename']}", f, file_name=row["Filename"])
-        if os.path.exists(row["Filename"].replace(".pdf", ".png")):
-            st.image(row["Filename"].replace(".pdf", ".png"), caption="Preview", use_column_width=True)
+        selected_file = st.selectbox("View Scanned Bill", bills_df["Filename"].tolist())
+        if selected_file and os.path.exists(selected_file):
+            st.image(selected_file.replace(".pdf", ".jpg") if os.path.exists(selected_file.replace(".pdf", ".jpg")) else selected_file)
+            with open(selected_file, "rb") as f:
+                st.download_button("⬇️ Download Bill", f.read(), file_name=selected_file)
 
-# ========== Usage Tab ==========
+# ===== Usage Tab =====
 with tab3:
     st.header("🛠️ Usage Log")
 
-    if inv_df.empty:
-        st.warning("⚠️ No inventory data found.")
-    else:
+    if not inv_df.empty:
         with st.form("usage_form"):
             used_item = st.selectbox("Used Item", inv_df["Item Name"].tolist())
             used_qty = st.number_input("Quantity Used", min_value=1)
-            purpose = st.text_input("Purpose", placeholder="e.g. Repair")
-            used_in = st.text_input("Used In", placeholder="e.g. Machine 5")
+            purpose = st.text_input("Purpose")
+            used_in = st.text_input("Used In")
 
             if st.form_submit_button("Log Usage"):
                 log = {
@@ -239,16 +202,16 @@ with tab3:
 
                 st.success("✅ Usage logged.")
 
-    st.dataframe(usage_df, use_container_width=True, hide_index=True)
+    st.dataframe(usage_df, use_container_width=True)
 
-# ========== Reports Tab ==========
+# ===== Reports Tab =====
 with tab4:
     st.header("📊 Reports")
 
     col1, col2, col3 = st.columns(3)
     col1.metric("📦 Components", len(inv_df))
     col2.metric("🔢 Total Qty", inv_df["Quantity"].sum() if not inv_df.empty else 0)
-    col3.metric("⚠️ Below Min", (inv_df["Quantity"] < inv_df["Min Stock"]).sum() if not inv_df.empty else 0)
+    col3.metric("⚠️ Below Min", (inv_df["Quantity"] < 10).sum() if not inv_df.empty else 0)
 
     st.download_button("⬇️ Download Inventory", inv_df.to_csv(index=False), "inventory.csv")
     st.download_button("⬇️ Download Usage Log", usage_df.to_csv(index=False), "usage_log.csv")
@@ -258,8 +221,3 @@ with tab4:
         st.subheader("Top Stocked Items")
         top = inv_df.sort_values(by="Quantity", ascending=False).head(10)
         st.bar_chart(top.set_index("Item Name")["Quantity"])
-
-        st.subheader("Reorder Suggestions")
-        low = inv_df[inv_df["Quantity"] < inv_df["Min Stock"]].copy()
-        low["Suggested Reorder"] = low["Min Stock"] * 2 - low["Quantity"]
-        st.dataframe(low[["Item Name", "Quantity", "Min Stock", "Suggested Reorder"]], use_container_width=True, hide_index=True)
