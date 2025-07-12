@@ -5,6 +5,8 @@ import io
 import os
 import base64
 from pymongo import MongoClient
+from PIL import Image
+from fpdf import FPDF
 
 # MongoDB setup
 MONGO_URI = "mongodb+srv://myAtlasDBUser:root@myatlasclusteredu.78toh.mongodb.net/?retryWrites=true&w=majority&appName=myAtlasClusterEDU"
@@ -120,25 +122,16 @@ with tab2:
     linked_items = st.multiselect("Linked Items", inv_df["Item Name"].tolist())
 
     if img_bytes and vendor and linked_items and st.button("📤 Save Bill"):
-        from PIL import Image
-        from fpdf import FPDF
-        import io
-        import os
-
-        # Create readable filename
         safe_vendor = vendor.replace(" ", "_")
-        safe_item = "_".join([item.replace(" ", "_") for item in linked_items])[:50]  # limit length
+        safe_item = "_".join([item.replace(" ", "_") for item in linked_items])[:50]
         today = datetime.datetime.now().strftime("%Y%m%d")
         filename = f"bills/{safe_vendor}_{safe_item}_{today}.pdf"
 
-        # Ensure folder
         os.makedirs("bills", exist_ok=True)
 
-        # Convert image to PDF
         image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         image.save(filename, "PDF")
 
-        # Add to bills_df
         new_entry = {
             "Date": str(datetime.date.today()),
             "Vendor": vendor,
@@ -167,16 +160,18 @@ with tab2:
                     base64_pdf = base64.b64encode(f.read()).decode("utf-8")
                     pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="500"></iframe>'
                     st.markdown(pdf_display, unsafe_allow_html=True)
-                    st.download_button("📥 Download Bill PDF", data=open(selected_file, "rb"), file_name=os.path.basename(selected_file))
+                    with open(selected_file, "rb") as download_file:
+                        st.download_button("📥 Download Bill PDF", data=download_file, file_name=os.path.basename(selected_file))
             else:
-                st.error("Selected file not found.")
+                st.error("❌ Selected file not found.")
     else:
-        st.info("No bills uploaded yet.")
+        st.info("ℹ️ No bills uploaded yet.")
+
 # ===== Usage Tab =====
 with tab3:
     st.header("🛠️ Usage Logging")
     if inv_df.empty:
-        st.warning("Inventory is empty.")
+        st.warning("⚠️ Inventory is empty.")
     else:
         with st.form("usage_form"):
             item = st.selectbox("Used Item", inv_df["Item Name"].tolist())
@@ -195,7 +190,7 @@ with tab3:
                 save_df(usage_df, usage_col)
                 inv_df.loc[inv_df["Item Name"] == item, "Quantity"] -= qty
                 save_df(inv_df, inventory_col)
-                st.success("Usage logged.")
+                st.success("✅ Usage logged.")
 
     st.dataframe(usage_df, use_container_width=True)
 
@@ -207,9 +202,9 @@ with tab4:
     col2.metric("🔢 Total Qty", inv_df["Quantity"].sum() if not inv_df.empty else 0)
     col3.metric("⚠️ Below Min", (inv_df["Quantity"] < 10).sum() if not inv_df.empty else 0)
 
-    st.download_button("Download Inventory", inv_df.to_csv(index=False), "inventory.csv")
-    st.download_button("Download Usage Log", usage_df.to_csv(index=False), "usage_log.csv")
-    st.download_button("Download Bill Log", bills_df.to_csv(index=False), "bills_log.csv")
+    st.download_button("📥 Download Inventory", inv_df.to_csv(index=False), "inventory.csv")
+    st.download_button("📥 Download Usage Log", usage_df.to_csv(index=False), "usage_log.csv")
+    st.download_button("📥 Download Bill Log", bills_df.to_csv(index=False), "bills_log.csv")
 
     if not inv_df.empty:
         st.subheader("Top Stocked Items")
